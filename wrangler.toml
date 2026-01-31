@@ -1,0 +1,8 @@
+name = "ticket-bot"
+main = "src/index.ts"
+compatibility_date = "2024-01-01"
+account_id = "533d313ef170042c947d37bf2ab123b8"
+
+[[kv_namespaces]]
+binding = "TICKET_DB"
+id = "628c6e2c13a64ef89170df5679b87b00"

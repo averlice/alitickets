@@ -1,0 +1,25 @@
+{
+  "name": "ticket-bot-worker",
+  "version": "1.0.0",
+  "type": "module",
+  "license": "GPL-3.0-only",
+  "description": "Serverless Discord Ticket Bot on Cloudflare Workers",
+  "main": "src/index.ts",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "register": "node --loader ts-node/esm src/register.ts"
+  },
+  "dependencies": {
+    "discord-api-types": "^0.37.0",
+    "discord-interactions": "^3.4.0",
+    "dotenv": "^17.2.3",
+    "hono": "^4.0.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20240101.0",
+    "ts-node": "^10.9.1",
+    "typescript": "^5.0.0",
+    "wrangler": "^3.0.0"
+  }
+}
