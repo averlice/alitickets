@@ -44,6 +44,19 @@ export const COMMANDS = [
                 required: true
             }
         ]
+      },
+      {
+        name: 'devrole',
+        description: 'Set the Developer Role ID for escalations',
+        type: 1, // SUB_COMMAND
+        options: [
+            {
+                name: 'id',
+                description: 'The Role ID',
+                type: 3, // STRING
+                required: true
+            }
+        ]
       }
     ]
   },

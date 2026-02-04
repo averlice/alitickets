@@ -12,51 +12,41 @@
         *   Copy Application ID and Public Key.
     *   **OAuth2 Tab:**
         *   Copy Client Secret.
-        *   Add Redirect URI: `https://<your-worker-subdomain>.workers.dev/auth/callback` (You'll get the subdomain after first deploy, or you can guess it if you know your cloudflare subdomain).
+        *   Add Redirect URI: `https://tickets.blindsoft.net/auth/callback`
 
 2.  **Configuration (Local Development):**
     *   Rename `.dev.vars.example` to `.dev.vars`.
-    *   Fill in:
-        *   `DISCORD_TOKEN`
-        *   `DISCORD_PUBLIC_KEY`
-        *   `DISCORD_APPLICATION_ID`
-        *   `DISCORD_CLIENT_SECRET`
-        *   `DISCORD_REDIRECT_URI` (e.g., http://localhost:8787/auth/callback for testing, or your production URL)
+    *   Fill in your secrets.
 
 3.  **Cloudflare KV:**
     *   Run `wrangler kv:namespace create TICKET_DB`.
-    *   Copy the output `id` and paste it into `wrangler.toml` (replace `id = ""`).
+    *   Copy the output `id` and paste it into `wrangler.toml`.
 
 4.  **Register Commands:**
     *   Run `npm run register`.
 
 5.  **Deploy & Secrets:**
     *   Run `npm run deploy`.
-    *   **Set Secrets in Cloudflare** (Critical for security):
+    *   **Set Secrets in Cloudflare**:
         *   `wrangler secret put DISCORD_TOKEN`
         *   `wrangler secret put DISCORD_PUBLIC_KEY`
         *   `wrangler secret put DISCORD_APPLICATION_ID`
         *   `wrangler secret put DISCORD_CLIENT_SECRET`
-        *   `wrangler secret put DISCORD_REDIRECT_URI` (Value: `https://your-worker-name.your-subdomain.workers.dev/auth/callback`)
+        *   `wrangler secret put DISCORD_REDIRECT_URI` (Value: `https://tickets.blindsoft.net/auth/callback`)
 
 6.  **Discord Interactions Endpoint:**
     *   Go to Discord Developer Portal -> **General Information**.
-    *   Paste your worker URL (e.g., `https://ticket-bot.ahpea.workers.dev`) into **Interactions Endpoint URL**.
+    *   Paste `https://tickets.blindsoft.net` into **Interactions Endpoint URL**.
 
 ## Usage
 
-
-
-1.  **Setup Role:** Run `/config role <role_id>` in your server. This sets the support role and binds the bot to this guild.
-
-2.  **Create Panel:** Run `/panel` to post the "Blindsoft Enterprises Support" message.
-
-3.  **Dashboard:** Visit `https://your-worker-url.workers.dev/dashboard` to view active tickets (Requires Support Role).
-
-
+1.  **Setup Role:** Run `/config role id:<role_id>` to set the support role.
+2.  **Setup Dev Role:** Run `/config devrole id:<role_id>` for escalations.
+3.  **Setup Logs:** Run `/config logs channel:<#channel>` for transcripts.
+4.  **Add Products:** Run `/add product name:<ProductName>`.
+5.  **Create Panel:** Run `/panel` in your support channel.
+6.  **Dashboard:** Visit `https://tickets.blindsoft.net/dashboard` (Requires Support Role).
 
 ## License
-
-
 
 This project is open-source and licensed under the **GNU General Public License v3 (GPLv3)**. See the `LICENSE` file for details.

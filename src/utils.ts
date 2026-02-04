@@ -87,7 +87,6 @@ export async function getDiscordUser(accessToken: string) {
 }
 
 export async function getGuildMember(guildId: string, userId: string, env: any) {
-    // We use the BOT token here to check the user's roles in the guild
     try {
         const res = await discordRequest(env, `guilds/${guildId}/members/${userId}`, { method: 'GET' });
         return await res.json();
@@ -105,10 +104,17 @@ export function generateDashboardHtml(tickets: any[], user: any) {
                 <p><strong>Issue:</strong> ${t.description || 'No description provided'}</p>
                 <p>Created by: ${t.userId}</p>
                 <p>Status: Active</p>
-                <a href="https://discord.com/channels/${t.guildId}/${t.channelId}" target="_blank">Open in Discord</a>
+                <div class="links">
+                    <a href="https://discord.com/channels/${t.guildId}/${t.channelId}" target="_blank">Open in Discord</a>
+                    <a href="/dashboard/summarize?channelId=${t.channelId}" class="btn-summarize">Summarize & Chat</a>
+                </div>
             </div>
             <div class="ticket-actions">
-                <form action="/dashboard/close" method="POST" onsubmit="return confirm('Are you sure you want to close this ticket?');">
+                <form action="/dashboard/forward" method="POST" style="display:inline;">
+                    <input type="hidden" name="channelId" value="${t.channelId}">
+                    <button type="submit" class="btn-forward">Forward to Dev</button>
+                </form>
+                <form action="/dashboard/close" method="POST" onsubmit="return confirm('Are you sure you want to close this ticket?');" style="display:inline;">
                     <input type="hidden" name="channelId" value="${t.channelId}">
                     <button type="submit" class="btn-close">Close Ticket</button>
                 </form>
@@ -131,7 +137,12 @@ export function generateDashboardHtml(tickets: any[], user: any) {
         .ticket h3 { margin: 0 0 10px 0; }
         .btn-close { background-color: #d9534f; color: white; border: none; padding: 10px 15px; border-radius: 5px; cursor: pointer; font-size: 14px; }
         .btn-close:hover { background-color: #c9302c; }
+        .btn-forward { background-color: #f0ad4e; color: white; border: none; padding: 10px 15px; border-radius: 5px; cursor: pointer; font-size: 14px; margin-right: 5px; }
+        .btn-forward:hover { background-color: #ec971f; }
+        .btn-summarize { background-color: #5bc0de; color: white; border: none; padding: 10px 15px; border-radius: 5px; cursor: pointer; font-size: 14px; text-decoration: none; display: inline-block; }
+        .btn-summarize:hover { background-color: #31b0d5; }
         a { color: #5865F2; text-decoration: none; margin-right: 15px; }
+        .links { margin-top: 10px; }
     </style>
 </head>
 <body>
@@ -140,11 +151,115 @@ export function generateDashboardHtml(tickets: any[], user: any) {
             <h1>Ticket Dashboard</h1>
             <div>Logged in as: ${user.username}</div>
         </div>
+        <div style="margin-bottom: 20px;">
+            <a href="/dashboard" style="font-weight: bold;">Main Dashboard</a> | 
+            <a href="/dev">Developer Dashboard</a>
+        </div>
         <h2>Active Tickets</h2>
         <div id="ticket-list">
             ${ticketList || '<p>No active tickets.</p>'}
         </div>
     </div>
+</body>
+</html>
+    `;
+}
+
+export function generateSummaryHtml(ticket: any, summary: string, channelId: string) {
+    return `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ticket Summary & Chat</title>
+    <style>
+        body { font-family: sans-serif; padding: 20px; background-color: #f0f0f0; }
+        .container { max-width: 800px; margin: 0 auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
+        .summary-box { background: #e7f3ff; padding: 15px; border-radius: 5px; margin-bottom: 20px; border-left: 5px solid #2196F3; }
+        #chat-window { height: 300px; border: 1px solid #ccc; overflow-y: scroll; padding: 10px; margin-bottom: 10px; display: flex; flex-direction: column; }
+        .msg { margin-bottom: 10px; padding: 8px; border-radius: 5px; max-width: 80% }
+        .user-msg { background: #DCF8C6; align-self: flex-end; }
+        .ai-msg { background: #f1f0f0; align-self: flex-start; }
+        .chat-input-area { display: flex; gap: 10px; }
+        input[type="text"] { flex-grow: 1; padding: 10px; border: 1px solid #ccc; border-radius: 5px; }
+        button { padding: 10px 20px; background: #5865F2; color: white; border: none; border-radius: 5px; cursor: pointer; }
+        .thinking { font-style: italic; color: #888; font-size: 0.9em; margin-bottom: 5px; display: block; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Ticket: ${ticket.channelName}</h1>
+        <p><strong>Product:</strong> ${ticket.product}</p>
+        
+        <h2>AI Summary</h2>
+        <div class="summary-box">
+            ${summary.replace(/\n/g, '<br>')}
+        </div>
+
+        <h2>Chat with AI Assistant</h2>
+        <div id="chat-window">
+            <div class="msg ai-msg">Hello! I've read the ticket transcript. Ask me anything about this issue.</div>
+        </div>
+        
+        <div class="chat-input-area">
+            <input type="text" id="user-input" placeholder="Ask a question about this ticket...">
+            <button onclick="sendMessage()">Send</button>
+        </div>
+        
+        <p><a href="/dashboard">← Back to Dashboard</a></p>
+    </div>
+
+    <script>
+        const chatWindow = document.getElementById('chat-window');
+        const userInput = document.getElementById('user-input');
+
+        async function sendMessage() {
+            const text = userInput.value.trim();
+            if (!text) return;
+
+            // Add user message to UI
+            addMessage(text, 'user-msg');
+            userInput.value = '';
+
+            // Add "AI is thinking" placeholder
+            const aiMsgDiv = document.createElement('div');
+            aiMsgDiv.className = 'msg ai-msg';
+            aiMsgDiv.innerHTML = '<span class="thinking">AI is thinking...</span>';
+            chatWindow.appendChild(aiMsgDiv);
+            chatWindow.scrollTop = chatWindow.scrollHeight;
+
+            try {
+                const res = await fetch('/dashboard/chat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        channelId: '${channelId}',
+                        question: text
+                    })
+                });
+                const data = await res.json();
+                
+                // Remove thinking and add response
+                aiMsgDiv.innerHTML = data.response.replace(/\\n/g, '<br>');
+                chatWindow.scrollTop = chatWindow.scrollHeight;
+            } catch (e) {
+                aiMsgDiv.innerHTML = 'Error: Failed to get response from AI.';
+            }
+        }
+
+        function addMessage(text, className) {
+            const div = document.createElement('div');
+            div.className = 'msg ' + className;
+            div.innerText = text;
+            chatWindow.appendChild(div);
+            chatWindow.scrollTop = chatWindow.scrollHeight;
+        }
+
+        userInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') sendMessage();
+        });
+    </script>
 </body>
 </html>
     `;
