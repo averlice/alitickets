@@ -95,7 +95,17 @@ export async function getGuildMember(guildId: string, userId: string, env: any) 
     }
 }
 
-export function generateDashboardHtml(tickets: any[], user: any) {
+function generateNav(isAdmin: boolean) {
+    return `
+        <nav style="margin-bottom: 20px; padding: 10px; background: #eee; border-radius: 5px;">
+            <a href="/dashboard" style="margin-right: 15px; font-weight: bold;">Main Dashboard</a>
+            <a href="/dev" style="margin-right: 15px; font-weight: bold;">Developer Dashboard</a>
+            ${isAdmin ? `<a href="/admin" style="font-weight: bold; color: #d9534f;">Admin Panel</a>` : ''}
+        </nav>
+    `;
+}
+
+export function generateDashboardHtml(tickets: any[], user: any, isAdmin: boolean = false) {
     const ticketList = tickets.map(t => `
         <div class="ticket">
             <div class="ticket-info">
@@ -151,10 +161,7 @@ export function generateDashboardHtml(tickets: any[], user: any) {
             <h1>Ticket Dashboard</h1>
             <div>Logged in as: ${user.username}</div>
         </div>
-        <div style="margin-bottom: 20px;">
-            <a href="/dashboard" style="font-weight: bold;">Main Dashboard</a> | 
-            <a href="/dev">Developer Dashboard</a>
-        </div>
+        ${generateNav(isAdmin)}
         <h2>Active Tickets</h2>
         <div id="ticket-list">
             ${ticketList || '<p>No active tickets.</p>'}
@@ -260,6 +267,86 @@ export function generateSummaryHtml(ticket: any, summary: string, channelId: str
             if (e.key === 'Enter') sendMessage();
         });
     </script>
+</body>
+</html>
+    `;
+}
+
+export function generateAdminDashboardHtml(config: any, products: string[], user: any) {
+    const productList = products.map(p => `
+        <div style="display: flex; justify-content: space-between; align-items: center; padding: 10px; border-bottom: 1px solid #eee;">
+            <span>${p}</span>
+            <form action="/admin/products/delete" method="POST" style="margin:0;">
+                <input type="hidden" name="productName" value="${p}">
+                <button type="submit" style="color: red; border: none; background: none; cursor: pointer;">Delete</button>
+            </form>
+        </div>
+    `).join('') || '<p>No products added.</p>';
+
+    return `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin Panel - Blindsoft Ticket Bot</title>
+    <style>
+        body { font-family: sans-serif; padding: 20px; background-color: #f8f9fa; }
+        .container { max-width: 900px; margin: 0 auto; background: white; padding: 30px; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+        .section { margin-bottom: 30px; padding: 20px; border: 1px solid #e1e4e8; border-radius: 8px; }
+        h2 { margin-top: 0; color: #333; border-bottom: 2px solid #5865F2; padding-bottom: 5px; }
+        .config-item { margin-bottom: 10px; }
+        .config-item label { font-weight: bold; display: block; margin-bottom: 5px; }
+        .config-item input { width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; }
+        button { padding: 10px 20px; background: #5865F2; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: bold; }
+        button:hover { background: #4752c4; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Admin Control Panel</h1>
+        <div>Logged in as: <strong>${user.username}</strong></div>
+        ${generateNav(true)}
+
+        <div class="section">
+            <h2>Bot Configuration</h2>
+            <form action="/admin/config/update" method="POST">
+                <div class="config-item">
+                    <label>Guild ID</label>
+                    <input type="text" name="guild_id" value="${config.guild_id || ''}" readonly style="background: #f0f0f0;">
+                </div>
+                <div class="config-item">
+                    <label>Support Role ID</label>
+                    <input type="text" name="support_role" value="${config.support_role || ''}">
+                </div>
+                <div class="config-item">
+                    <label>Log Channel ID</label>
+                    <input type="text" name="log_channel" value="${config.log_channel || ''}">
+                </div>
+                <div class="config-item">
+                    <label>Developer Role ID</label>
+                    <input type="text" name="dev_role" value="${config.dev_role || ''}">
+                </div>
+                <button type="submit">Update Configuration</button>
+            </form>
+        </div>
+
+        <div class="section">
+            <h2>Product Management</h2>
+            <div style="margin-bottom: 20px;">
+                ${productList}
+            </div>
+            <form action="/admin/products/add" method="POST" style="display: flex; gap: 10px;">
+                <input type="text" name="productName" placeholder="New product name..." required style="flex-grow: 1; padding: 8px; border: 1px solid #ccc; border-radius: 4px;">
+                <button type="submit">Add Product</button>
+            </form>
+        </div>
+
+        <div class="section">
+            <h2>Global Stats</h2>
+            <p>Total Tickets Ever Opened: <strong>${config.ticket_count || 0}</strong></p>
+        </div>
+    </div>
 </body>
 </html>
     `;
