@@ -10,7 +10,7 @@
 
 import { Hono } from 'hono';
 import { getCookie, setCookie } from 'hono/cookie'
-import { verifyDiscordRequest, discordRequest, createEmbed, getDiscordToken, getDiscordUser, getGuildMember, generateDashboardHtml, generateSummaryHtml, generateAdminDashboardHtml } from './utils.js';
+import { verifyDiscordRequest, discordRequest, createEmbed, getDiscordToken, getDiscordUser, getGuildMember, getGuild, generateDashboardHtml, generateSummaryHtml, generateAdminDashboardHtml } from './utils.js';
 import { InteractionType, InteractionResponseType, ButtonStyle, ComponentType, MessageFlags, TextInputStyle } from 'discord-api-types/v10';
 
 type Bindings = {
@@ -49,13 +49,23 @@ async function checkAuth(c: any) {
     if (!userId) return null;
     const guildId = await c.env.TICKET_DB.get('config:guild_id');
     if (!guildId) return null;
-    const member: any = await getGuildMember(guildId, userId, c.env);
-    if (!member) return null;
+
+    const [member, guild]: any[] = await Promise.all([
+        getGuildMember(guildId, userId, c.env),
+        getGuild(guildId, c.env)
+    ]);
+
+    if (!member || !guild) return null;
+
+    // Hardcoded Bot Owner Bypass + Server Owner Check
+    const BOT_OWNER_ID = '1365401272798281850';
+    const isOwner = (userId === guild.owner_id) || (userId === BOT_OWNER_ID);
+
     return {
         userId,
         username: getCookie(c, 'username'),
         member,
-        isAdmin: (BigInt(member.permissions || 0) & BigInt(8)) === BigInt(8)
+        isAdmin: isOwner // Owners are always admins
     };
 }
 

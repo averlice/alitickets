@@ -95,12 +95,20 @@ export async function getGuildMember(guildId: string, userId: string, env: any) 
     }
 }
 
+export async function getGuild(guildId: string, env: any) {
+    try {
+        const res = await discordRequest(env, `guilds/${guildId}`, { method: 'GET' });
+        return await res.json();
+    } catch (e) {
+        return null;
+    }
+}
+
 function generateNav(isAdmin: boolean) {
     return `
         <nav style="margin-bottom: 20px; padding: 10px; background: #eee; border-radius: 5px;">
             <a href="/dashboard" style="margin-right: 15px; font-weight: bold;">Main Dashboard</a>
             <a href="/dev" style="margin-right: 15px; font-weight: bold;">Developer Dashboard</a>
-            ${isAdmin ? `<a href="/admin" style="font-weight: bold; color: #d9534f;">Admin Panel</a>` : ''}
         </nav>
     `;
 }
