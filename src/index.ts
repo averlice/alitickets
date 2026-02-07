@@ -10,7 +10,7 @@
 
 import { Hono } from 'hono';
 import { getCookie, setCookie } from 'hono/cookie'
-import { verifyDiscordRequest, discordRequest, createEmbed, getDiscordToken, getDiscordUser, getGuildMember, getGuild, generateDashboardHtml, generateSummaryHtml, generateAdminDashboardHtml } from './utils.js';
+import { verifyDiscordRequest, discordRequest, createEmbed, getDiscordToken, getDiscordUser, getGuildMember, getGuild, generateDashboardHtml, generateSummaryHtml, generateAdminDashboardHtml, generatePortalHtml, generatePortalTicketViewHtml } from './utils.js';
 import { InteractionType, InteractionResponseType, ButtonStyle, ComponentType, MessageFlags, TextInputStyle } from 'discord-api-types/v10';
 
 type Bindings = {
@@ -41,41 +41,97 @@ app.get('/auth/callback', async (c) => {
     setCookie(c, 'user_id', user.id);
     setCookie(c, 'username', user.username);
     setCookie(c, 'access_token', tokens.access_token);
-    return c.redirect('/dashboard');
+    return c.redirect('/');
 });
 
 async function checkAuth(c: any) {
     const userId = getCookie(c, 'user_id');
     if (!userId) return null;
     const guildId = await c.env.TICKET_DB.get('config:guild_id');
-    if (!guildId) return null;
+    if (!guildId) return { userId, username: getCookie(c, 'username'), isAdmin: false, member: null };
 
     const [member, guild]: any[] = await Promise.all([
         getGuildMember(guildId, userId, c.env),
         getGuild(guildId, c.env)
     ]);
 
-    if (!member || !guild) return null;
-
-    // Hardcoded Bot Owner Bypass + Server Owner Check
     const BOT_OWNER_ID = '1365401272798281850';
-    const isOwner = (userId === guild.owner_id) || (userId === BOT_OWNER_ID);
+    const isOwner = (guild && userId === guild.owner_id) || (userId === BOT_OWNER_ID);
 
     return {
         userId,
         username: getCookie(c, 'username'),
         member,
-        isAdmin: isOwner // Owners are always admins
+        isAdmin: isOwner
     };
 }
 
+// User Portal (Home)
+app.get('/', async (c) => {
+    const auth = await checkAuth(c);
+    if (!auth) return c.redirect('/auth/login');
+
+    const activeTicketsRaw = await c.env.TICKET_DB.get('tickets:active');
+    const activeTicketIds: string[] = activeTicketsRaw ? JSON.parse(activeTicketsRaw) : [];
+    const userTickets = [];
+    for (const id of activeTicketIds) {
+        const metaRaw = await c.env.TICKET_DB.get(`ticket:${id}`);
+        if (metaRaw) {
+            const meta = JSON.parse(metaRaw);
+            if (meta.userId === auth.userId) userTickets.push(meta);
+        }
+    }
+
+    const prodsRaw = await c.env.TICKET_DB.get('config:products');
+    const products = prodsRaw ? JSON.parse(prodsRaw) : [];
+
+    return c.html(generatePortalHtml({ username: auth.username }, userTickets, products));
+});
+
+// Create Ticket via Web
+app.post('/portal/create', async (c) => {
+    const auth = await checkAuth(c);
+    if (!auth) return c.redirect('/auth/login');
+
+    const body = await c.req.parseBody();
+    const product = body.product as string;
+    const description = body.description as string;
+    const guildId = await c.env.TICKET_DB.get('config:guild_id');
+
+    if (!guildId) return c.text('Bot not configured.', 500);
+
+    const ticketId = await createDiscordTicket(guildId, auth.userId, product, description, c.env);
+    if (ticketId) return c.redirect('/');
+    return c.text('Failed to create ticket.', 500);
+});
+
+// View Transcript via Web
+app.get('/portal/ticket/:id', async (c) => {
+    const auth = await checkAuth(c);
+    if (!auth) return c.redirect('/auth/login');
+
+    const channelId = c.req.param('id');
+    const metaRaw = await c.env.TICKET_DB.get(`ticket:${channelId}`);
+    if (!metaRaw) return c.text('Ticket not found.', 404);
+    const meta = JSON.parse(metaRaw);
+
+    // Security: Only the creator or staff can view
+    const supportRoleId = await c.env.TICKET_DB.get('config:support_role');
+    const isStaff = auth.isAdmin || (supportRoleId && auth.member?.roles.includes(supportRoleId));
+    if (meta.userId !== auth.userId && !isStaff) return c.text('Unauthorized.', 403);
+
+    const messagesRes = await discordRequest(c.env, `channels/${channelId}/messages?limit=100`, { method: 'GET' });
+    const messages = await messagesRes.json();
+
+    return c.html(generatePortalTicketViewHtml(meta, messages));
+});
+
+// Staff Dashboard
 app.get('/dashboard', async (c) => {
     const auth = await checkAuth(c);
     if (!auth) return c.redirect('/auth/login');
-    
     const supportRoleId = await c.env.TICKET_DB.get('config:support_role');
-    const hasRole = supportRoleId && auth.member.roles.includes(supportRoleId);
-    if (!hasRole && !auth.isAdmin) return c.text('Access Denied.', 403);
+    if (!auth.isAdmin && (!supportRoleId || !auth.member?.roles.includes(supportRoleId))) return c.text('Access Denied.', 403);
 
     const activeTicketsRaw = await c.env.TICKET_DB.get('tickets:active');
     const activeTicketIds: string[] = activeTicketsRaw ? JSON.parse(activeTicketsRaw) : [];
@@ -87,13 +143,12 @@ app.get('/dashboard', async (c) => {
     return c.html(generateDashboardHtml(tickets, { username: auth.username }, auth.isAdmin));
 });
 
+// Dev Dashboard
 app.get('/dev', async (c) => {
     const auth = await checkAuth(c);
     if (!auth) return c.redirect('/auth/login');
-    
     const devRoleId = await c.env.TICKET_DB.get('config:dev_role');
-    const hasRole = devRoleId && auth.member.roles.includes(devRoleId);
-    if (!hasRole && !auth.isAdmin) return c.text('Access Denied.', 403);
+    if (!auth.isAdmin && (!devRoleId || !auth.member?.roles.includes(devRoleId))) return c.text('Access Denied.', 403);
 
     const devTicketsRaw = await c.env.TICKET_DB.get('tickets:dev');
     const devTicketIds: string[] = devTicketsRaw ? JSON.parse(devTicketsRaw) : [];
@@ -108,46 +163,37 @@ app.get('/dev', async (c) => {
 // Admin Dashboard
 app.get('/admin', async (c) => {
     const auth = await checkAuth(c);
-    if (!auth) return c.redirect('/auth/login');
-    if (!auth.isAdmin) return c.text('Administrator permission required.', 403);
+    if (!auth || !auth.isAdmin) return c.text('Administrator permission required.', 403);
 
     const configKeys = ['config:guild_id', 'config:support_role', 'config:log_channel', 'config:dev_role', 'ticket_count'];
     const config: any = {};
-    for (const key of configKeys) {
-        config[key.replace('config:', '')] = await c.env.TICKET_DB.get(key);
-    }
-
-    const productsRaw = await c.env.TICKET_DB.get('config:products');
-    const products = productsRaw ? JSON.parse(productsRaw) : [];
+    for (const key of configKeys) { config[key.replace('config:', '')] = await c.env.TICKET_DB.get(key); }
+    const prodsRaw = await c.env.TICKET_DB.get('config:products');
+    const products = prodsRaw ? JSON.parse(prodsRaw) : [];
 
     return c.html(generateAdminDashboardHtml(config, products, { username: auth.username }));
 });
 
+// Admin Actions
 app.post('/admin/config/update', async (c) => {
     const auth = await checkAuth(c);
     if (!auth || !auth.isAdmin) return c.text('Unauthorized', 403);
-
     const body = await c.req.parseBody();
     if (body.support_role) await c.env.TICKET_DB.put('config:support_role', body.support_role as string);
     if (body.log_channel) await c.env.TICKET_DB.put('config:log_channel', body.log_channel as string);
     if (body.dev_role) await c.env.TICKET_DB.put('config:dev_role', body.dev_role as string);
-
     return c.redirect('/admin');
 });
 
 app.post('/admin/products/add', async (c) => {
     const auth = await checkAuth(c);
     if (!auth || !auth.isAdmin) return c.text('Unauthorized', 403);
-
     const body = await c.req.parseBody();
     const name = body.productName as string;
     if (name) {
         const prodsRaw = await c.env.TICKET_DB.get('config:products');
         const prods: string[] = prodsRaw ? JSON.parse(prodsRaw) : [];
-        if (!prods.includes(name)) {
-            prods.push(name);
-            await c.env.TICKET_DB.put('config:products', JSON.stringify(prods));
-        }
+        if (!prods.includes(name)) { prods.push(name); await c.env.TICKET_DB.put('config:products', JSON.stringify(prods)); }
     }
     return c.redirect('/admin');
 });
@@ -155,7 +201,6 @@ app.post('/admin/products/add', async (c) => {
 app.post('/admin/products/delete', async (c) => {
     const auth = await checkAuth(c);
     if (!auth || !auth.isAdmin) return c.text('Unauthorized', 403);
-
     const body = await c.req.parseBody();
     const name = body.productName as string;
     if (name) {
@@ -167,120 +212,40 @@ app.post('/admin/products/delete', async (c) => {
     return c.redirect('/admin');
 });
 
-// Forwarding Route
-app.post('/dashboard/forward', async (c) => {
-    const auth = await checkAuth(c);
-    if (!auth) return c.redirect('/auth/login');
-    
-    const supportRoleId = await c.env.TICKET_DB.get('config:support_role');
-    if (!auth.member.roles.includes(supportRoleId) && !auth.isAdmin) return c.text('Access Denied', 403);
+// Ticket Helper Functions
+async function createDiscordTicket(guildId: string, userId: string, product: string, description: string, env: any) {
+    const supportRoleId = await env.TICKET_DB.get('config:support_role');
+    let count = await env.TICKET_DB.get('ticket_count') || '0';
+    const newCount = parseInt(count) + 1;
+    await env.TICKET_DB.put('ticket_count', newCount.toString());
 
-    const body = await c.req.parseBody();
-    const channelId = body['channelId'] as string;
-
-    const devTicketsRaw = await c.env.TICKET_DB.get('tickets:dev');
-    const devTicketIds: string[] = devTicketsRaw ? JSON.parse(devTicketsRaw) : [];
-    if (!devTicketIds.includes(channelId)) {
-        devTicketIds.push(channelId);
-        await c.env.TICKET_DB.put('tickets:dev', JSON.stringify(devTicketIds));
-    }
-
-    const devRoleId = await c.env.TICKET_DB.get('config:dev_role');
-    if (devRoleId) {
-        await discordRequest(c.env, `channels/${channelId}/permissions/${devRoleId}`, { method: 'PUT', body: { allow: '3072', type: 0 } });
-    }
-
-    await discordRequest(c.env, `channels/${channelId}/messages`, { method: 'POST', body: { content: "🚀 **Ticket forwarded to Developers.**" } });
-    return c.redirect('/dashboard');
-});
-
-// Summarize Route
-app.get('/dashboard/summarize', async (c) => {
-    const auth = await checkAuth(c);
-    if (!auth) return c.redirect('/auth/login');
-    
-    const channelId = c.req.query('channelId');
-    if (!channelId) return c.text('Missing Channel ID', 400);
-
-    const ticketMetaRaw = await c.env.TICKET_DB.get(`ticket:${channelId}`);
-    if (!ticketMetaRaw) return c.text('Ticket not found', 404);
-    const meta = JSON.parse(ticketMetaRaw);
+    const channelName = `ticket-${newCount.toString().padStart(4, '0')}`;
+    const overwrites = [
+        { id: guildId, type: 0, deny: '1024' },
+        { id: userId, type: 1, allow: '3072' },
+        { id: env.DISCORD_APPLICATION_ID, type: 1, allow: '3072' }
+    ];
+    if (supportRoleId) overwrites.push({ id: supportRoleId, type: 0, allow: '3072' });
 
     try {
-        const messagesRes = await discordRequest(c.env, `channels/${channelId}/messages?limit=100`, { method: 'GET' });
-        const messages = await messagesRes.json();
-        const transcript = Array.isArray(messages) ? messages.reverse().map((m: any) => `${m.author.username}: ${m.content}`).join('\n') : "No messages.";
+        const channelRes = await discordRequest(env, `guilds/${guildId}/channels`, { method: 'POST', body: { name: channelName, type: 0, permission_overwrites: overwrites } });
+        const channel: any = await channelRes.json();
 
-        const aiResponse = await c.env.AI.run('@cf/deepseek-ai/deepseek-r1-distill-qwen-32b', {
-            messages: [
-                { 
-                    role: 'system', 
-                    content: 'You are a strict support assistant for Blindsoft Enterprises. Your ONLY job is to summarize the provided Discord ticket transcript. Focus purely on the support issue, user needs, and actions taken. Do not include your thinking process. If the transcript contains off-topic chatter, ignore it. Provide ONLY the summary in a concise format.' 
-                },
-                { role: 'user', content: `Ticket Meta: ${JSON.stringify(meta)}\n\nTranscript:\n${transcript}` }
-            ],
-            max_tokens: 1536
-        });
+        const activeTicketsRaw = await env.TICKET_DB.get('tickets:active');
+        const activeTicketIds: string[] = activeTicketsRaw ? JSON.parse(activeTicketsRaw) : [];
+        activeTicketIds.push(channel.id);
+        await env.TICKET_DB.put('tickets:active', JSON.stringify(activeTicketIds));
+        await env.TICKET_DB.put(`ticket:${channel.id}`, JSON.stringify({ channelId: channel.id, channelName, userId, guildId, product, description, createdAt: new Date().toISOString() }));
 
-        const summaryRaw = aiResponse.response || aiResponse.answer || "Failed to generate summary.";
-        const summary = summaryRaw.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
-        return c.html(generateSummaryHtml(meta, summary, channelId));
-    } catch (e: any) { return c.text(`AI Error: ${e.message}`, 500); }
-});
+        await discordRequest(env, `channels/${channel.id}/messages`, { method: 'POST', body: { 
+            content: `<@${userId}>`, 
+            embeds: [{ title: `Ticket #${newCount}`, color: 0x5865F2, fields: [{ name: 'Product', value: product, inline: true }, { name: 'Issue Description', value: description }], footer: { text: 'Support will be with you shortly.' } }], 
+            components: [{ type: ComponentType.ActionRow, components: [{ type: ComponentType.Button, style: ButtonStyle.Danger, label: 'Close Ticket', custom_id: 'close_ticket_btn', emoji: { name: '🔒' } }] }] 
+        } });
 
-app.post('/dashboard/chat', async (c) => {
-    const auth = await checkAuth(c);
-    if (!auth) return c.json({ error: 'Unauthorized' }, 401);
-
-    const { channelId, question } = await c.req.json();
-    const ticketMetaRaw = await c.env.TICKET_DB.get(`ticket:${channelId}`);
-    if (!ticketMetaRaw) return c.json({ error: 'Ticket not found' }, 404);
-
-    try {
-        const messagesRes = await discordRequest(c.env, `channels/${channelId}/messages?limit=100`, { method: 'GET' });
-        const messages = await messagesRes.json();
-        const transcript = Array.isArray(messages) ? messages.reverse().map((m: any) => `${m.author.username}: ${m.content}`).join('\n') : "No messages.";
-
-        const aiResponse = await c.env.AI.run('@cf/deepseek-ai/deepseek-r1-distill-qwen-32b', {
-            messages: [
-                { 
-                    role: 'system', 
-                    content: `You are a strict support assistant for Blindsoft Enterprises. You are assisting staff by answering questions about a specific Discord ticket. 
-                    
-                    RULES:
-                    1. ONLY answer questions based on the provided transcript.
-                    2. If a question is UNRELATED to the ticket or the support issue, you MUST politely refuse to answer and state that you are only here to discuss this ticket.
-                    3. Do not roleplay, do not write creative stories, and do not provide general information not found in the context.
-                    4. Stay professional and analytical.
-                    
-                    Transcript Context:
-                    ${transcript}` 
-                },
-                { role: 'user', content: question }
-            ],
-            max_tokens: 1536
-        });
-
-        const responseRaw = aiResponse.response || aiResponse.answer;
-        const response = responseRaw.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
-        return c.json({ response });
-    } catch (e: any) { return c.json({ error: e.message }, 500); }
-});
-
-app.post('/dashboard/close', async (c) => {
-    const auth = await checkAuth(c);
-    if (!auth) return c.redirect('/auth/login');
-    const body = await c.req.parseBody();
-    const channelId = body['channelId'] as string;
-    
-    const supportRoleId = await c.env.TICKET_DB.get('config:support_role');
-    const devRoleId = await c.env.TICKET_DB.get('config:dev_role');
-    const hasRole = (supportRoleId && auth.member.roles.includes(supportRoleId)) || (devRoleId && auth.member.roles.includes(devRoleId));
-
-    if (!hasRole && !auth.isAdmin) return c.text('Access Denied', 403);
-    await closeTicket(channelId, auth.userId, c.env);
-    return c.redirect('/dashboard');
-});
+        return channel.id;
+    } catch (e) { return null; }
+}
 
 async function closeTicket(channelId: string, closerId: string, env: any) {
     const logChannelId = await env.TICKET_DB.get('config:log_channel');
@@ -293,153 +258,119 @@ async function closeTicket(channelId: string, closerId: string, env: any) {
             const transcript = Array.isArray(messages) ? messages.reverse().map((m: any) => `[${new Date(m.timestamp).toLocaleString()}] ${m.author.username}: ${m.content}`).join('\n') : "No messages found.";
             const transcriptFile = new Blob([transcript], { type: 'text/plain' });
             const formData = new FormData();
-            formData.append('payload_json', JSON.stringify({
-                content: `🔒 **Ticket Closed**\n**Ticket:** ${meta.channelName}\n**Product:** ${meta.product || 'N/A'}\n**Opened By:** <@${meta.userId}>\n**Closed By:** <@${closerId}>`,
-            }));
+            formData.append('payload_json', JSON.stringify({ content: `🔒 **Ticket Closed**\n**Ticket:** ${meta.channelName}\n**Product:** ${meta.product || 'N/A'}\n**Opened By:** <@${meta.userId}>\n**Closed By:** <@${closerId}>` }));
             formData.append('files[0]', transcriptFile, `${meta.channelName}-transcript.txt`);
             await fetch(`https://discord.com/api/v10/channels/${logChannelId}/messages`, { method: 'POST', headers: { Authorization: `Bot ${env.DISCORD_TOKEN}` }, body: formData });
-        } catch (e) { console.error('Failed to send transcript:', e); }
+        } catch (e) { console.error(e); }
     }
     const activeTicketsRaw = await env.TICKET_DB.get('tickets:active');
     let activeTicketIds: string[] = activeTicketsRaw ? JSON.parse(activeTicketsRaw) : [];
     activeTicketIds = activeTicketIds.filter((id: string) => id !== channelId);
     await env.TICKET_DB.put('tickets:active', JSON.stringify(activeTicketIds));
-
     const devTicketsRaw = await env.TICKET_DB.get('tickets:dev');
     let devTicketIds: string[] = devTicketsRaw ? JSON.parse(devTicketsRaw) : [];
     devTicketIds = devTicketIds.filter((id: string) => id !== channelId);
     await env.TICKET_DB.put('tickets:dev', JSON.stringify(devTicketIds));
-
     await env.TICKET_DB.delete(`ticket:${channelId}`);
     await discordRequest(env, `channels/${channelId}`, { method: 'DELETE' });
 }
 
+// Bot Post Requests (Slash Commands & Interactions)
 app.post('/', async (c) => {
   const { isValid, interaction } = await verifyDiscordRequest(c.req.raw, c.env);
   if (!isValid || !interaction) return c.text('Invalid signature', 401);
-
   if (interaction.type === InteractionType.Ping) return c.json({ type: InteractionResponseType.Pong });
 
   if (interaction.type === InteractionType.ApplicationCommand) {
     const { name, options } = interaction.data;
-    
     if (name === 'config') {
         await c.env.TICKET_DB.put('config:guild_id', interaction.guild_id);
         const subcommand = options[0];
-        if (subcommand.name === 'role') {
-            const roleId = subcommand.options[0].value;
-            await c.env.TICKET_DB.put('config:support_role', roleId);
-            return c.json({ type: InteractionResponseType.ChannelMessageWithSource, data: { content: `✅ Support Role set to <@&${roleId}>`, flags: MessageFlags.Ephemeral }});
-        }
-        if (subcommand.name === 'logs') {
-            const channelId = subcommand.options[0].value;
-            await c.env.TICKET_DB.put('config:log_channel', channelId);
-            return c.json({ type: InteractionResponseType.ChannelMessageWithSource, data: { content: `✅ Transcripts set to <#${channelId}>`, flags: MessageFlags.Ephemeral }});
-        }
-        if (subcommand.name === 'devrole') {
-            const roleId = subcommand.options[0].value;
-            await c.env.TICKET_DB.put('config:dev_role', roleId);
-            return c.json({ type: InteractionResponseType.ChannelMessageWithSource, data: { content: `✅ Developer Role set to <@&${roleId}>`, flags: MessageFlags.Ephemeral }});
-        }
+        if (subcommand.name === 'role') { await c.env.TICKET_DB.put('config:support_role', subcommand.options[0].value); return c.json({ type: InteractionResponseType.ChannelMessageWithSource, data: { content: "✅ Support Role set.", flags: MessageFlags.Ephemeral }}); }
+        if (subcommand.name === 'logs') { await c.env.TICKET_DB.put('config:log_channel', subcommand.options[0].value); return c.json({ type: InteractionResponseType.ChannelMessageWithSource, data: { content: "✅ Logs set.", flags: MessageFlags.Ephemeral }}); }
+        if (subcommand.name === 'devrole') { await c.env.TICKET_DB.put('config:dev_role', subcommand.options[0].value); return c.json({ type: InteractionResponseType.ChannelMessageWithSource, data: { content: "✅ Dev Role set.", flags: MessageFlags.Ephemeral }}); }
     }
-
-    if (name === 'add') {
-        const subcommand = options[0];
-        if (subcommand.name === 'product') {
-            const prodName = subcommand.options[0].value;
-            const prodsRaw = await c.env.TICKET_DB.get('config:products');
-            const prods: string[] = prodsRaw ? JSON.parse(prodsRaw) : [];
-            if (!prods.includes(prodName)) {
-                prods.push(prodName);
-                await c.env.TICKET_DB.put('config:products', JSON.stringify(prods));
-            }
-            return c.json({ type: InteractionResponseType.ChannelMessageWithSource, data: { content: `✅ Product "${prodName}" added.`, flags: MessageFlags.Ephemeral }});
-        }
-        if (subcommand.name === 'user') {
-            const userId = subcommand.options[0].value;
-            await discordRequest(c.env, `channels/${interaction.channel.id}/permissions/${userId}`, { method: 'PUT', body: { allow: '1024', type: 1 } });
-            return c.json({ type: InteractionResponseType.ChannelMessageWithSource, data: { content: `✅ Added <@${userId}> to the ticket.` }});
-        }
+    if (name === 'add' && options[0].name === 'product') {
+        const prodName = options[0].options[0].value;
+        const prodsRaw = await c.env.TICKET_DB.get('config:products');
+        const prods = prodsRaw ? JSON.parse(prodsRaw) : [];
+        if (!prods.includes(prodName)) { prods.push(prodName); await c.env.TICKET_DB.put('config:products', JSON.stringify(prods)); }
+        return c.json({ type: InteractionResponseType.ChannelMessageWithSource, data: { content: `✅ Product added.`, flags: MessageFlags.Ephemeral }});
     }
-
-    if (name === 'panel') {
-        return c.json({
-            type: InteractionResponseType.ChannelMessageWithSource,
-            data: {
-                embeds: [createEmbed('Blindsoft Enterprises Support', 'Need support? Click the button below to start.', 0x5865F2)],
-                components: [{ type: ComponentType.ActionRow, components: [{ type: ComponentType.Button, style: ButtonStyle.Primary, label: 'Open Ticket', custom_id: 'create_ticket', emoji: { name: '📩' } }] }]
-            }
-        });
-    }
-
-    if (name === 'close') {
-        await closeTicket(interaction.channel.id, interaction.member.user.id, c.env);
-        return c.json({ type: InteractionResponseType.DeferredChannelMessageWithSource });
-    }
+    if (name === 'panel') return c.json({ type: InteractionResponseType.ChannelMessageWithSource, data: { embeds: [createEmbed('Blindsoft Enterprises Support', 'Need support? Click below.', 0x5865F2)], components: [{ type: ComponentType.ActionRow, components: [{ type: ComponentType.Button, style: ButtonStyle.Primary, label: 'Open Ticket', custom_id: 'create_ticket', emoji: { name: '📩' } }] }] } });
+    if (name === 'close') { await closeTicket(interaction.channel.id, interaction.member.user.id, c.env); return c.json({ type: InteractionResponseType.DeferredChannelMessageWithSource }); }
   }
 
   if (interaction.type === InteractionType.MessageComponent) {
     if (interaction.data.custom_id === 'create_ticket') {
         const prodsRaw = await c.env.TICKET_DB.get('config:products');
-        const prods: string[] = prodsRaw ? JSON.parse(prodsRaw) : [];
+        const prods = prodsRaw ? JSON.parse(prodsRaw) : [];
         if (prods.length === 0) return c.json({ type: InteractionResponseType.ChannelMessageWithSource, data: { content: "No products configured.", flags: MessageFlags.Ephemeral }});
-
-        return c.json({
-            type: InteractionResponseType.ChannelMessageWithSource,
-            data: {
-                content: "Which product do you need help with?",
-                flags: MessageFlags.Ephemeral,
-                components: [{ type: ComponentType.ActionRow, components: [{ type: ComponentType.StringSelect, custom_id: 'select_product', options: prods.map(p => ({ label: p, value: p })) }] }]
-            }
-        });
+        return c.json({ type: InteractionResponseType.ChannelMessageWithSource, data: { content: "Which product?", flags: MessageFlags.Ephemeral, components: [{ type: ComponentType.ActionRow, components: [{ type: ComponentType.StringSelect, custom_id: 'select_product', options: prods.map((p:string) => ({ label: p, value: p })) }] }] } });
     }
-
-    if (interaction.data.custom_id === 'select_product') {
-        const product = interaction.data.values[0];
-        return c.json({
-            type: InteractionResponseType.Modal,
-            data: { title: 'Ticket Details', custom_id: `ticket_modal:${product}`, components: [{ type: ComponentType.ActionRow, components: [{ type: ComponentType.TextInput, custom_id: 'issue_description', label: 'Describe your issue', style: TextInputStyle.Paragraph, placeholder: 'e.g. WFR command is not working', required: true }] }] }
-        });
-    }
-
-    if (interaction.data.custom_id === 'close_ticket_btn') {
-         await closeTicket(interaction.channel.id, interaction.member.user.id, c.env);
-         return c.json({ type: InteractionResponseType.DeferredMessageUpdate });
-    }
+    if (interaction.data.custom_id === 'select_product') return c.json({ type: InteractionResponseType.Modal, data: { title: 'Ticket Details', custom_id: `ticket_modal:${interaction.data.values[0]}`, components: [{ type: ComponentType.ActionRow, components: [{ type: ComponentType.TextInput, custom_id: 'issue_description', label: 'Describe your issue', style: TextInputStyle.Paragraph, required: true }] }] } });
+    if (interaction.data.custom_id === 'close_ticket_btn') { await closeTicket(interaction.channel.id, interaction.member.user.id, c.env); return c.json({ type: InteractionResponseType.DeferredMessageUpdate }); }
   }
 
   if (interaction.type === InteractionType.ModalSubmit) {
-    if (interaction.data.custom_id.startsWith('ticket_modal:')) {
-        const product = interaction.data.custom_id.split(':')[1];
-        const description = interaction.data.components[0].components[0].value;
-        const userId = interaction.member.user.id;
-        const supportRoleId = await c.env.TICKET_DB.get('config:support_role');
-
-        let count = await c.env.TICKET_DB.get('ticket_count') || '0';
-        const newCount = parseInt(count) + 1;
-        await c.env.TICKET_DB.put('ticket_count', newCount.toString());
-
-        const channelName = `ticket-${newCount.toString().padStart(4, '0')}`;
-        const overwrites = [{ id: interaction.guild_id, type: 0, deny: '1024' }, { id: userId, type: 1, allow: '3072' }, { id: c.env.DISCORD_APPLICATION_ID, type: 1, allow: '3072' }];
-        if (supportRoleId) overwrites.push({ id: supportRoleId, type: 0, allow: '3072' });
-
-        try {
-            const channelRes = await discordRequest(c.env, `guilds/${interaction.guild_id}/channels`, { method: 'POST', body: { name: channelName, type: 0, permission_overwrites: overwrites } });
-            const channel: any = await channelRes.json();
-
-            const activeTicketsRaw = await c.env.TICKET_DB.get('tickets:active');
-            const activeTicketIds: string[] = activeTicketsRaw ? JSON.parse(activeTicketsRaw) : [];
-            activeTicketIds.push(channel.id);
-            await c.env.TICKET_DB.put('tickets:active', JSON.stringify(activeTicketIds));
-            await c.env.TICKET_DB.put(`ticket:${channel.id}`, JSON.stringify({ channelId: channel.id, channelName, userId, guildId: interaction.guild_id, product, description, createdAt: new Date().toISOString() }));
-
-            await discordRequest(c.env, `channels/${channel.id}/messages`, { method: 'POST', body: { content: `<@${userId}>`, embeds: [{ title: `Ticket #${newCount}`, color: 0x5865F2, fields: [{ name: 'Product', value: product, inline: true }, { name: 'Issue Description', value: description }], footer: { text: 'Support will be with you shortly.' } }], components: [{ type: ComponentType.ActionRow, components: [{ type: ComponentType.Button, style: ButtonStyle.Danger, label: 'Close Ticket', custom_id: 'close_ticket_btn', emoji: { name: '🔒' } }] }] } });
-            return c.json({ type: InteractionResponseType.ChannelMessageWithSource, data: { content: `✅ Ticket created: <#${channel.id}>`, flags: MessageFlags.Ephemeral } });
-        } catch (e: any) { return c.json({ type: InteractionResponseType.ChannelMessageWithSource, data: { content: `Error: ${e.message}`, flags: MessageFlags.Ephemeral } }); }
-    }
+    const product = interaction.data.custom_id.split(':')[1];
+    const description = interaction.data.components[0].components[0].value;
+    await createDiscordTicket(interaction.guild_id, interaction.member.user.id, product, description, c.env);
+    return c.json({ type: InteractionResponseType.ChannelMessageWithSource, data: { content: `✅ Ticket created. Check your sidebar!`, flags: MessageFlags.Ephemeral } });
   }
-
   return c.text('Unknown interaction', 400);
+});
+
+// Staff Tool Routes (Summarize/Chat/Forward/Close)
+app.get('/dashboard/summarize', async (c) => {
+    const auth = await checkAuth(c);
+    if (!auth) return c.redirect('/auth/login');
+    const channelId = c.req.query('channelId');
+    const metaRaw = await c.env.TICKET_DB.get(`ticket:${channelId}`);
+    if (!metaRaw) return c.text('Ticket not found', 404);
+    const meta = JSON.parse(metaRaw);
+    try {
+        const messagesRes = await discordRequest(c.env, `channels/${channelId}/messages?limit=100`, { method: 'GET' });
+        const messages = await messagesRes.json();
+        const transcript = Array.isArray(messages) ? messages.reverse().map((m: any) => `${m.author.username}: ${m.content}`).join('\n') : "No messages.";
+        const aiResponse = await c.env.AI.run('@cf/deepseek-ai/deepseek-r1-distill-qwen-32b', { messages: [{ role: 'system', content: 'Summarize this ticket transcript. Final summary only.' }, { role: 'user', content: transcript }], max_tokens: 1024 });
+        const summary = (aiResponse.response || aiResponse.answer).replace(/<think>[\s\S]*?<\/think>/g, '').trim();
+        return c.html(generateSummaryHtml(meta, summary, channelId as string));
+    } catch (e: any) { return c.text(`AI Error: ${e.message}`, 500); }
+});
+
+app.post('/dashboard/chat', async (c) => {
+    const auth = await checkAuth(c);
+    if (!auth) return c.json({ error: 'Unauthorized' }, 401);
+    const { channelId, question } = await c.req.json();
+    try {
+        const messagesRes = await discordRequest(c.env, `channels/${channelId}/messages?limit=100`, { method: 'GET' });
+        const transcript = (await messagesRes.json()).reverse().map((m: any) => `${m.author.username}: ${m.content}`).join('\n');
+        const aiResponse = await c.env.AI.run('@cf/deepseek-ai/deepseek-r1-distill-qwen-32b', { messages: [{ role: 'system', content: `Analyze this transcript:\n${transcript}` }, { role: 'user', content: question }], max_tokens: 1024 });
+        return c.json({ response: (aiResponse.response || aiResponse.answer).replace(/<think>[\s\S]*?<\/think>/g, '').trim() });
+    } catch (e: any) { return c.json({ error: e.message }, 500); }
+});
+
+app.post('/dashboard/forward', async (c) => {
+    const auth = await checkAuth(c);
+    if (!auth) return c.redirect('/auth/login');
+    const body = await c.req.parseBody();
+    const channelId = body['channelId'] as string;
+    const devTicketsRaw = await c.env.TICKET_DB.get('tickets:dev');
+    const devTicketIds = devTicketsRaw ? JSON.parse(devTicketsRaw) : [];
+    if (!devTicketIds.includes(channelId)) { devTicketIds.push(channelId); await c.env.TICKET_DB.put('tickets:dev', JSON.stringify(devTicketIds)); }
+    const devRoleId = await c.env.TICKET_DB.get('config:dev_role');
+    if (devRoleId) await discordRequest(c.env, `channels/${channelId}/permissions/${devRoleId}`, { method: 'PUT', body: { allow: '3072', type: 0 } });
+    await discordRequest(c.env, `channels/${channelId}/messages`, { method: 'POST', body: { content: "🚀 **Forwarded to Developers.**" } });
+    return c.redirect('/dashboard');
+});
+
+app.post('/dashboard/close', async (c) => {
+    const auth = await checkAuth(c);
+    if (!auth) return c.redirect('/auth/login');
+    const body = await c.req.parseBody();
+    await closeTicket(body['channelId'] as string, auth.userId, c.env);
+    return c.redirect('/dashboard');
 });
 
 export default app;

@@ -233,11 +233,9 @@ export function generateSummaryHtml(ticket: any, summary: string, channelId: str
             const text = userInput.value.trim();
             if (!text) return;
 
-            // Add user message to UI
             addMessage(text, 'user-msg');
             userInput.value = '';
 
-            // Add "AI is thinking" placeholder
             const aiMsgDiv = document.createElement('div');
             aiMsgDiv.className = 'msg ai-msg';
             aiMsgDiv.innerHTML = '<span class="thinking">AI is thinking...</span>';
@@ -254,8 +252,6 @@ export function generateSummaryHtml(ticket: any, summary: string, channelId: str
                     })
                 });
                 const data = await res.json();
-                
-                // Remove thinking and add response
                 aiMsgDiv.innerHTML = data.response.replace(/\\n/g, '<br>');
                 chatWindow.scrollTop = chatWindow.scrollHeight;
             } catch (e) {
@@ -354,6 +350,118 @@ export function generateAdminDashboardHtml(config: any, products: string[], user
             <h2>Global Stats</h2>
             <p>Total Tickets Ever Opened: <strong>${config.ticket_count || 0}</strong></p>
         </div>
+    </div>
+</body>
+</html>
+    `;
+}
+
+export function generatePortalHtml(user: any, tickets: any[], products: string[]) {
+    const ticketList = tickets.map(t => `
+        <div class="ticket" style="border: 1px solid #ddd; padding: 15px; margin-bottom: 10px; border-radius: 8px;">
+            <h3>Ticket ${t.channelName}</h3>
+            <p><strong>Product:</strong> ${t.product}</p>
+            <p><strong>Status:</strong> Open</p>
+            <a href="/portal/ticket/${t.channelId}" style="color: #5865F2; font-weight: bold;">View Conversation & Transcript</a>
+        </div>
+    `).join('') || '<p>You have no open tickets.</p>';
+
+    const productOptions = products.map(p => `<option value="${p}">${p}</option>`).join('');
+
+    return `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Blindsoft Support Portal</title>
+    <style>
+        body { font-family: sans-serif; padding: 20px; background-color: #f0f2f5; }
+        .container { max-width: 800px; margin: 0 auto; background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
+        .header { text-align: center; margin-bottom: 30px; }
+        .section { margin-bottom: 40px; }
+        h2 { border-bottom: 2px solid #5865F2; padding-bottom: 10px; margin-bottom: 20px; }
+        label { display: block; margin-bottom: 8px; font-weight: bold; }
+        select, textarea { width: 100%; padding: 12px; border: 1px solid #ccc; border-radius: 6px; margin-bottom: 20px; box-sizing: border-box; }
+        button { background: #5865F2; color: white; border: none; padding: 12px 24px; border-radius: 6px; cursor: pointer; font-size: 16px; font-weight: bold; width: 100%; }
+        button:hover { background: #4752c4; }
+        .user-info { text-align: right; font-size: 0.9em; color: #666; margin-bottom: 20px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Blindsoft Support Portal</h1>
+            <p>Welcome to the official support hub for ElevenSoft, VeeScribe, and all Blindsoft products.</p>
+        </div>
+
+        <div class="user-info">Logged in as: <strong>${user.username}</strong> | <a href="/auth/login">Switch Account</a></div>
+
+        <div class="section">
+            <h2>Create a New Ticket</h2>
+            <form action="/portal/create" method="POST">
+                <label for="product">Select Product</label>
+                <select name="product" id="product" required>
+                    <option value="" disabled selected>Choose a product...</option>
+                    ${productOptions}
+                </select>
+
+                <label for="description">Issue Description</label>
+                <textarea name="description" id="description" rows="4" placeholder="Describe the issue you are experiencing..." required></textarea>
+
+                <button type="submit">Open Ticket</button>
+            </form>
+        </div>
+
+        <div class="section">
+            <h2>My Active Tickets</h2>
+            ${ticketList}
+        </div>
+    </div>
+</body>
+</html>
+    `;
+}
+
+export function generatePortalTicketViewHtml(ticket: any, messages: any[]) {
+    const chat = messages.reverse().map(m => `
+        <div style="margin-bottom: 15px; border-bottom: 1px solid #eee; padding-bottom: 10px;">
+            <strong style="color: #5865F2;">${m.author.username}</strong> <span style="font-size: 0.8em; color: #999;">${new Date(m.timestamp).toLocaleString()}</span>
+            <div style="margin-top: 5px;">${m.content || '<em>(Attachment or Embed)</em>'}</div>
+        </div>
+    `).join('') || '<p>No messages yet.</p>';
+
+    return `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ticket ${ticket.channelName} - Blindsoft Portal</title>
+    <style>
+        body { font-family: sans-serif; padding: 20px; background-color: #f0f2f5; }
+        .container { max-width: 800px; margin: 0 auto; background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
+        .chat-box { border: 1px solid #ddd; padding: 20px; border-radius: 8px; background: #fff; max-height: 500px; overflow-y: auto; margin-bottom: 20px; }
+        .info-bar { background: #e7f3ff; padding: 15px; border-radius: 8px; margin-bottom: 20px; }
+        .back-link { display: inline-block; margin-bottom: 20px; color: #5865F2; text-decoration: none; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <a href="/" class="back-link">← Back to Portal</a>
+        <h1>Ticket ${ticket.channelName}</h1>
+        
+        <div class="info-bar">
+            <p><strong>Product:</strong> ${ticket.product}</p>
+            <p><strong>Initial Description:</strong> ${ticket.description}</p>
+        </div>
+
+        <h2>Conversation Transcript</h2>
+        <div class="chat-box">
+            ${chat}
+        </div>
+
+        <p style="text-align: center; color: #666; font-style: italic;">To reply, please use the private channel in your Discord app.</p>
     </div>
 </body>
 </html>
