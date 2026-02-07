@@ -356,7 +356,35 @@ export function generateAdminDashboardHtml(config: any, products: string[], user
     `;
 }
 
-export function generatePortalHtml(user: any, tickets: any[], products: string[]) {
+export function generatePortalHtml(user: any | null, tickets: any[], products: string[]) {
+    if (!user) {
+        return `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Blindsoft Support Portal</title>
+    <style>
+        body { font-family: sans-serif; display: flex; justify-content: center; align-items: center; min-height: 100vh; background-color: #f0f2f5; margin: 0; }
+        .card { background: white; padding: 40px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); text-align: center; max-width: 400px; width: 100%; }
+        h1 { color: #333; margin-bottom: 10px; }
+        p { color: #666; margin-bottom: 30px; line-height: 1.5; }
+        .btn-login { background: #5865F2; color: white; text-decoration: none; padding: 15px 30px; border-radius: 8px; font-weight: bold; display: block; font-size: 1.1em; transition: background 0.2s; }
+        .btn-login:hover { background: #4752c4; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h1>Blindsoft Support</h1>
+        <p>Login with your Discord account to create a support ticket or view your existing ones.</p>
+        <a href="/auth/login" class="btn-login">Login with Discord</a>
+    </div>
+</body>
+</html>
+        `;
+    }
+
     const ticketList = tickets.map(t => `
         <div class="ticket" style="border: 1px solid #ddd; padding: 15px; margin-bottom: 10px; border-radius: 8px;">
             <h3>Ticket ${t.channelName}</h3>
