@@ -213,7 +213,10 @@ app.get('/dashboard/summarize', async (c) => {
 
         const aiResponse = await c.env.AI.run('@cf/deepseek-ai/deepseek-r1-distill-qwen-32b', {
             messages: [
-                { role: 'system', content: 'You are a support assistant. Summarize the following Discord ticket transcript. IMPORTANT: Do not include your thinking process. Provide ONLY the summary.' },
+                { 
+                    role: 'system', 
+                    content: 'You are a strict support assistant for Blindsoft Enterprises. Your ONLY job is to summarize the provided Discord ticket transcript. Focus purely on the support issue, user needs, and actions taken. Do not include your thinking process. If the transcript contains off-topic chatter, ignore it. Provide ONLY the summary in a concise format.' 
+                },
                 { role: 'user', content: `Ticket Meta: ${JSON.stringify(meta)}\n\nTranscript:\n${transcript}` }
             ],
             max_tokens: 1536
@@ -240,7 +243,19 @@ app.post('/dashboard/chat', async (c) => {
 
         const aiResponse = await c.env.AI.run('@cf/deepseek-ai/deepseek-r1-distill-qwen-32b', {
             messages: [
-                { role: 'system', content: `You are a support assistant. Transcript:\n${transcript}` },
+                { 
+                    role: 'system', 
+                    content: `You are a strict support assistant for Blindsoft Enterprises. You are assisting staff by answering questions about a specific Discord ticket. 
+                    
+                    RULES:
+                    1. ONLY answer questions based on the provided transcript.
+                    2. If a question is UNRELATED to the ticket or the support issue, you MUST politely refuse to answer and state that you are only here to discuss this ticket.
+                    3. Do not roleplay, do not write creative stories, and do not provide general information not found in the context.
+                    4. Stay professional and analytical.
+                    
+                    Transcript Context:
+                    ${transcript}` 
+                },
                 { role: 'user', content: question }
             ],
             max_tokens: 1536
