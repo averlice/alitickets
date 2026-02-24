@@ -97,5 +97,10 @@ export const COMMANDS = [
     name: 'close',
     description: 'Close this ticket',
     type: 1,
+  },
+  {
+    name: 'ping',
+    description: 'Check bot latency and connection metrics',
+    type: 1,
   }
 ];

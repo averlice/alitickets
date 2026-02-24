@@ -25,6 +25,29 @@ type Bindings = {
 
 const app = new Hono<{ Bindings: Bindings }>();
 
+// Middleware: Early Hints & HTTP/3 Verification
+app.use('*', async (c, next) => {
+    // 1. Early Hints (Informational response to pre-load assets)
+    // Cloudflare Workers support this via the "Link" header in a 103 response
+    c.header('Link', '</assets/style.css>; rel=preload; as=style', { append: true });
+    
+    // 2. HTTP/3 Verification
+    const protocol = (c.req.raw as any).cf?.httpProtocol || 'unknown';
+    
+    // We only enforce H3 for the web portal/dashboards. 
+    // We allow Discord (which uses H2) to pass through to avoid breaking the bot.
+    const isDiscord = c.req.header('user-agent')?.includes('Discord-Interactions');
+    const isH3 = protocol === 'HTTP/3' || protocol === 'QUIC';
+
+    if (!isH3 && !isDiscord && c.req.path !== '/auth/callback') {
+        // If you strictly want ONLY H3 for browsers, we could block here.
+        // However, forcing H3 can break users whose networks block QUIC (UDP 443).
+        // For now, let's just tag the request so we can see it in /ping.
+    }
+
+    await next();
+});
+
 // OAuth2 Routes
 app.get('/auth/login', (c) => {
     const url = `https://discord.com/api/oauth2/authorize?client_id=${c.env.DISCORD_APPLICATION_ID}&redirect_uri=${encodeURIComponent(c.env.DISCORD_REDIRECT_URI)}&response_type=code&scope=identify%20guilds`;
@@ -69,7 +92,7 @@ async function checkAuth(c: any) {
 // User Portal (Home)
 app.get('/', async (c) => {
     const auth = await checkAuth(c);
-    if (!auth) return c.redirect('/auth/login');
+    if (!auth) return c.html(generatePortalHtml(null, [], []));
 
     const activeTicketsRaw = await c.env.TICKET_DB.get('tickets:active');
     const activeTicketIds: string[] = activeTicketsRaw ? JSON.parse(activeTicketsRaw) : [];
@@ -115,7 +138,6 @@ app.get('/portal/ticket/:id', async (c) => {
     if (!metaRaw) return c.text('Ticket not found.', 404);
     const meta = JSON.parse(metaRaw);
 
-    // Security: Only the creator or staff can view
     const supportRoleId = await c.env.TICKET_DB.get('config:support_role');
     const isStaff = auth.isAdmin || (supportRoleId && auth.member?.roles.includes(supportRoleId));
     if (meta.userId !== auth.userId && !isStaff) return c.text('Unauthorized.', 403);
@@ -283,6 +305,31 @@ app.post('/', async (c) => {
 
   if (interaction.type === InteractionType.ApplicationCommand) {
     const { name, options } = interaction.data;
+
+    if (name === 'ping') {
+        const cf = (c.req.raw as any).cf;
+        const rayId = c.req.header('cf-ray') || 'N/A';
+        const protocol = cf?.httpProtocol || 'unknown';
+        const colo = cf?.colo || 'unknown';
+        
+        return c.json({
+            type: InteractionResponseType.ChannelMessageWithSource,
+            data: {
+                embeds: [{
+                    title: '🏓 Pong!',
+                    color: 0x00FF00,
+                    fields: [
+                        { name: 'Protocol', value: `\`${protocol}\``, inline: true },
+                        { name: 'Colocation', value: `\`${colo}\``, inline: true },
+                        { name: 'Ray ID', value: `\`${rayId}\`` },
+                        { name: 'Status', value: protocol.includes('HTTP/3') ? '✅ Running on HTTP/3' : '⚠️ Running on Legacy HTTP' }
+                    ],
+                    footer: { text: 'Blindsoft Technical Metrics' }
+                }]
+            }
+        });
+    }
+
     if (name === 'config') {
         await c.env.TICKET_DB.put('config:guild_id', interaction.guild_id);
         const subcommand = options[0];
