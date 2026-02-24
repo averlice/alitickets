@@ -25,27 +25,13 @@ type Bindings = {
 
 const app = new Hono<{ Bindings: Bindings }>();
 
-// Middleware: Early Hints & HTTP/3 Verification
+// Middleware: Execution Timing & Early Hints
 app.use('*', async (c, next) => {
-    // 1. Early Hints (Informational response to pre-load assets)
-    // Cloudflare Workers support this via the "Link" header in a 103 response
+    const start = Date.now();
     c.header('Link', '</assets/style.css>; rel=preload; as=style', { append: true });
-    
-    // 2. HTTP/3 Verification
-    const protocol = (c.req.raw as any).cf?.httpProtocol || 'unknown';
-    
-    // We only enforce H3 for the web portal/dashboards. 
-    // We allow Discord (which uses H2) to pass through to avoid breaking the bot.
-    const isDiscord = c.req.header('user-agent')?.includes('Discord-Interactions');
-    const isH3 = protocol === 'HTTP/3' || protocol === 'QUIC';
-
-    if (!isH3 && !isDiscord && c.req.path !== '/auth/callback') {
-        // If you strictly want ONLY H3 for browsers, we could block here.
-        // However, forcing H3 can break users whose networks block QUIC (UDP 443).
-        // For now, let's just tag the request so we can see it in /ping.
-    }
-
     await next();
+    const ms = Date.now() - start;
+    c.header('X-Response-Time', `${ms}ms`);
 });
 
 // OAuth2 Routes
@@ -70,17 +56,21 @@ app.get('/auth/callback', async (c) => {
 async function checkAuth(c: any) {
     const userId = getCookie(c, 'user_id');
     if (!userId) return null;
+    
+    const BOT_OWNER_ID = '1365401272798281850';
     const guildId = await c.env.TICKET_DB.get('config:guild_id');
-    if (!guildId) return { userId, username: getCookie(c, 'username'), isAdmin: false, member: null };
+    
+    // If we have a guild ID, do deep check. Otherwise, just basic user info.
+    if (!guildId) return { userId, username: getCookie(c, 'username'), isAdmin: userId === BOT_OWNER_ID, member: null };
 
     const [member, guild]: any[] = await Promise.all([
         getGuildMember(guildId, userId, c.env),
         getGuild(guildId, c.env)
     ]);
 
-    const BOT_OWNER_ID = '1365401272798281850';
-    const isOwner = (guild && userId === guild.owner_id) || (userId === BOT_OWNER_ID);
-
+    // OWNERSHIP CHECK: Priority 1
+    const isOwner = (userId === BOT_OWNER_ID) || (guild && userId === guild.owner_id);
+    
     return {
         userId,
         username: getCookie(c, 'username'),
@@ -185,7 +175,8 @@ app.get('/dev', async (c) => {
 // Admin Dashboard
 app.get('/admin', async (c) => {
     const auth = await checkAuth(c);
-    if (!auth || !auth.isAdmin) return c.text('Administrator permission required.', 403);
+    if (!auth) return c.redirect('/auth/login');
+    if (!auth.isAdmin) return c.text(`Access Denied. Administrator permission required. Your ID: ${auth.userId}`, 403);
 
     const configKeys = ['config:guild_id', 'config:support_role', 'config:log_channel', 'config:dev_role', 'ticket_count'];
     const config: any = {};
@@ -299,6 +290,7 @@ async function closeTicket(channelId: string, closerId: string, env: any) {
 
 // Bot Post Requests (Slash Commands & Interactions)
 app.post('/', async (c) => {
+  const start = Date.now();
   const { isValid, interaction } = await verifyDiscordRequest(c.req.raw, c.env);
   if (!isValid || !interaction) return c.text('Invalid signature', 401);
   if (interaction.type === InteractionType.Ping) return c.json({ type: InteractionResponseType.Pong });
@@ -311,6 +303,7 @@ app.post('/', async (c) => {
         const rayId = c.req.header('cf-ray') || 'N/A';
         const protocol = cf?.httpProtocol || 'unknown';
         const colo = cf?.colo || 'unknown';
+        const executionTime = Date.now() - start;
         
         return c.json({
             type: InteractionResponseType.ChannelMessageWithSource,
@@ -319,10 +312,11 @@ app.post('/', async (c) => {
                     title: '🏓 Pong!',
                     color: 0x00FF00,
                     fields: [
+                        { name: 'Worker Latency', value: `\`${executionTime}ms\``, inline: true },
                         { name: 'Protocol', value: `\`${protocol}\``, inline: true },
                         { name: 'Colocation', value: `\`${colo}\``, inline: true },
                         { name: 'Ray ID', value: `\`${rayId}\`` },
-                        { name: 'Status', value: protocol.includes('HTTP/3') ? '✅ Running on HTTP/3' : '⚠️ Running on Legacy HTTP' }
+                        { name: 'Gateway', value: '`Cloudflare Edge`', inline: true }
                     ],
                     footer: { text: 'Blindsoft Technical Metrics' }
                 }]
